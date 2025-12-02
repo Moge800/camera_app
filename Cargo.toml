@@ -2,9 +2,26 @@
 name = "camera_app"
 version = "0.1.0"
 edition = "2021"
+authors = ["Moge800"]
+description = "Surface Go 4向けカメラアプリケーション - 写真撮影、動画録画、カメラ切り替え機能"
+license = "MIT"
+repository = "https://github.com/Moge800/camera_app"
+readme = "README.md"
+keywords = ["camera", "opencv", "egui", "video", "photo"]
+categories = ["multimedia::video", "gui"]
 
 [dependencies]
 eframe = "0.29"
 egui = "0.29"
 opencv = { version = "0.92", features = ["videoio", "imgcodecs", "imgproc"] }
 chrono = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"

@@ -7,6 +7,9 @@ use opencv::{
 };
 use chrono::Local;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::fs;
 
 #[derive(PartialEq, Clone, Copy)]
 enum CaptureMode {
@@ -26,24 +29,32 @@ struct CameraApp {
     current_frame: Arc<Mutex<Option<egui::ColorImage>>>,
     capture_mode: CaptureMode,
     camera_position: CameraPosition,
-    is_recording: bool,
+    is_recording: Arc<AtomicBool>,
     camera_index: i32,
     frame_width: i32,
     frame_height: i32,
+    output_dir: PathBuf,
 }
 
 impl Default for CameraApp {
     fn default() -> Self {
+        // 出力ディレクトリを作成
+        let output_dir = PathBuf::from("camera_output");
+        if !output_dir.exists() {
+            let _ = fs::create_dir_all(&output_dir);
+        }
+        
         Self {
             camera: Arc::new(Mutex::new(None)),
             video_writer: Arc::new(Mutex::new(None)),
             current_frame: Arc::new(Mutex::new(None)),
             capture_mode: CaptureMode::Photo,
             camera_position: CameraPosition::Rear,
-            is_recording: false,
+            is_recording: Arc::new(AtomicBool::new(false)),
             camera_index: 0,
             frame_width: 640,
             frame_height: 480,
+            output_dir,
         }
     }
 }
@@ -85,12 +96,14 @@ impl CameraApp {
 
     fn switch_camera(&mut self) {
         // 録画中の場合は停止
-        if self.is_recording {
+        if self.is_recording.load(Ordering::Relaxed) {
             self.stop_recording();
         }
         
         // 現在のカメラを解放
-        *self.camera.lock().unwrap() = None;
+        if let Ok(mut cam_lock) = self.camera.lock() {
+            *cam_lock = None;
+        }
         
         // カメラインデックスを切り替え (0: リア, 1: フロント)
         self.camera_index = if self.camera_index == 0 { 1 } else { 0 };
@@ -100,90 +113,107 @@ impl CameraApp {
     }
 
     fn capture_photo(&self) {
-        if let Some(cam) = self.camera.lock().unwrap().as_mut() {
-            let mut frame = Mat::default();
-            if cam.read(&mut frame).unwrap_or(false) && !frame.empty() {
-                let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-                let filename = format!("photo_{}.jpg", timestamp);
-                
-                match imgcodecs::imwrite(&filename, &frame, &Vector::new()) {
-                    Ok(_) => println!("写真を保存しました: {}", filename),
-                    Err(e) => eprintln!("写真の保存に失敗しました: {}", e),
+        if let Ok(mut cam_lock) = self.camera.lock() {
+            if let Some(cam) = cam_lock.as_mut() {
+                let mut frame = Mat::default();
+                if cam.read(&mut frame).unwrap_or(false) && !frame.empty() {
+                    let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+                    let filename = self.output_dir.join(format!("photo_{}.jpg", timestamp));
+                    
+                    match imgcodecs::imwrite(filename.to_str().unwrap_or("photo.jpg"), &frame, &Vector::new()) {
+                        Ok(_) => println!("写真を保存しました: {:?}", filename),
+                        Err(e) => eprintln!("写真の保存に失敗しました: {}", e),
+                    }
                 }
             }
         }
     }
 
     fn start_recording(&mut self) {
-        if let Some(cam) = self.camera.lock().unwrap().as_ref() {
-            let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-            let filename = format!("video_{}.mp4", timestamp);
-            
-            // MP4形式で保存 (H264コーデック)
-            let fourcc = VideoWriter::fourcc('m', 'p', '4', 'v').unwrap_or(
-                VideoWriter::fourcc('M', 'J', 'P', 'G').unwrap_or(0)
-            );
-            
-            let fps = cam.get(videoio::CAP_PROP_FPS).unwrap_or(30.0);
-            let frame_size = Size::new(self.frame_width, self.frame_height);
-            
-            match VideoWriter::new(&filename, fourcc, fps, frame_size, true) {
-                Ok(writer) => {
-                    if writer.is_opened().unwrap_or(false) {
-                        *self.video_writer.lock().unwrap() = Some(writer);
-                        self.is_recording = true;
-                        println!("録画を開始しました: {} ({}fps)", filename, fps);
-                    } else {
-                        eprintln!("VideoWriterを開けませんでした");
+        if let Ok(cam_lock) = self.camera.lock() {
+            if let Some(cam) = cam_lock.as_ref() {
+                let timestamp = Local::now().format("%Y%m%d_%H%M%S");
+                let filename = self.output_dir.join(format!("video_{}.mp4", timestamp));
+                
+                // MP4形式で保存 (H264コーデック)
+                let fourcc = VideoWriter::fourcc('m', 'p', '4', 'v').unwrap_or(
+                    VideoWriter::fourcc('M', 'J', 'P', 'G').unwrap_or(0)
+                );
+                
+                // FPSを取得、不正な値の場合は30fpsをデフォルトに
+                let fps = cam.get(videoio::CAP_PROP_FPS).unwrap_or(30.0);
+                let fps = if fps > 0.0 && fps <= 120.0 { fps } else { 30.0 };
+                let frame_size = Size::new(self.frame_width, self.frame_height);
+                
+                match VideoWriter::new(filename.to_str().unwrap_or("video.mp4"), fourcc, fps, frame_size, true) {
+                    Ok(writer) => {
+                        if writer.is_opened().unwrap_or(false) {
+                            if let Ok(mut writer_lock) = self.video_writer.lock() {
+                                *writer_lock = Some(writer);
+                                self.is_recording.store(true, Ordering::Relaxed);
+                                println!("録画を開始しました: {:?} ({}fps)", filename, fps);
+                            }
+                        } else {
+                            eprintln!("VideoWriterを開けませんでした");
+                        }
                     }
-                }
-                Err(e) => {
-                    eprintln!("VideoWriterの作成に失敗しました: {}", e);
+                    Err(e) => {
+                        eprintln!("VideoWriterの作成に失敗しました: {}", e);
+                    }
                 }
             }
         }
     }
 
     fn stop_recording(&mut self) {
-        if let Some(writer) = self.video_writer.lock().unwrap().take() {
-            drop(writer);
-            self.is_recording = false;
-            println!("録画を停止しました");
+        if let Ok(mut writer_lock) = self.video_writer.lock() {
+            if let Some(writer) = writer_lock.take() {
+                drop(writer);
+                self.is_recording.store(false, Ordering::Relaxed);
+                println!("録画を停止しました");
+            }
         }
     }
 
     fn update_frame(&self) {
-        if let Some(cam) = self.camera.lock().unwrap().as_mut() {
-            let mut frame = Mat::default();
-            
-            if cam.read(&mut frame).unwrap_or(false) && !frame.empty() {
-                // 録画中の場合はフレームを書き込む
-                if self.is_recording {
-                    if let Some(writer) = self.video_writer.lock().unwrap().as_mut() {
-                        let _ = writer.write(&frame);
-                    }
-                }
+        if let Ok(mut cam_lock) = self.camera.lock() {
+            if let Some(cam) = cam_lock.as_mut() {
+                let mut frame = Mat::default();
                 
-                // フレームをRGBに変換
-                let mut rgb_frame = Mat::default();
-                if opencv::imgproc::cvt_color(&frame, &mut rgb_frame, opencv::imgproc::COLOR_BGR2RGB, 0).is_ok() {
-                    let size = rgb_frame.size().unwrap();
-                    let width = size.width as usize;
-                    let height = size.height as usize;
+                if cam.read(&mut frame).unwrap_or(false) && !frame.empty() {
+                    // 録画中の場合はフレームを書き込む
+                    if self.is_recording.load(Ordering::Relaxed) {
+                        if let Ok(mut writer_lock) = self.video_writer.lock() {
+                            if let Some(writer) = writer_lock.as_mut() {
+                                let _ = writer.write(&frame);
+                            }
+                        }
+                    }
                     
-                    if let Ok(data) = rgb_frame.data_bytes() {
-                        let pixels: Vec<egui::Color32> = data
-                            .chunks(3)
-                            .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
-                            .collect();
-                        
-                        if pixels.len() == width * height {
-                            let color_image = egui::ColorImage {
-                                size: [width, height],
-                                pixels,
-                            };
+                    // フレームをRGBに変換
+                    let mut rgb_frame = Mat::default();
+                    if opencv::imgproc::cvt_color(&frame, &mut rgb_frame, opencv::imgproc::COLOR_BGR2RGB, 0).is_ok() {
+                        if let Ok(size) = rgb_frame.size() {
+                            let width = size.width as usize;
+                            let height = size.height as usize;
                             
-                            *self.current_frame.lock().unwrap() = Some(color_image);
+                            if let Ok(data) = rgb_frame.data_bytes() {
+                                let pixels: Vec<egui::Color32> = data
+                                    .chunks(3)
+                                    .map(|rgb| egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]))
+                                    .collect();
+                                
+                                if pixels.len() == width * height {
+                                    let color_image = egui::ColorImage {
+                                        size: [width, height],
+                                        pixels,
+                                    };
+                                    
+                                    if let Ok(mut frame_lock) = self.current_frame.lock() {
+                                        *frame_lock = Some(color_image);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -234,7 +264,7 @@ impl eframe::App for CameraApp {
                     self.capture_mode == CaptureMode::Photo,
                     "📷 写真"
                 ).clicked() {
-                    if self.is_recording {
+                    if self.is_recording.load(Ordering::Relaxed) {
                         self.stop_recording();
                     }
                     self.capture_mode = CaptureMode::Photo;
@@ -255,16 +285,20 @@ impl eframe::App for CameraApp {
                     self.camera_position == CameraPosition::Rear,
                     "🔲 リア"
                 ).clicked() {
-                    self.camera_position = CameraPosition::Rear;
-                    self.switch_camera();
+                    if self.camera_position != CameraPosition::Rear {
+                        self.camera_position = CameraPosition::Rear;
+                        self.switch_camera();
+                    }
                 }
                 
                 if ui.selectable_label(
                     self.camera_position == CameraPosition::Front,
                     "🤳 フロント"
                 ).clicked() {
-                    self.camera_position = CameraPosition::Front;
-                    self.switch_camera();
+                    if self.camera_position != CameraPosition::Front {
+                        self.camera_position = CameraPosition::Front;
+                        self.switch_camera();
+                    }
                 }
             });
             
@@ -279,7 +313,7 @@ impl eframe::App for CameraApp {
                         }
                     }
                     CaptureMode::Video => {
-                        if !self.is_recording {
+                        if !self.is_recording.load(Ordering::Relaxed) {
                             if ui.button("⏺ 録画開始").clicked() {
                                 self.start_recording();
                             }
@@ -292,6 +326,9 @@ impl eframe::App for CameraApp {
                     }
                 }
             });
+            
+            ui.separator();
+            ui.label(format!("保存先: {}", self.output_dir.display()));
         });
         
         // 継続的に再描画
@@ -302,7 +339,7 @@ impl eframe::App for CameraApp {
 impl Drop for CameraApp {
     fn drop(&mut self) {
         // 録画中の場合は停止
-        if self.is_recording {
+        if self.is_recording.load(Ordering::Relaxed) {
             self.stop_recording();
         }
     }

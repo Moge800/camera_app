@@ -1,1 +1,12 @@
-/target
+# ビルド成果物
+/target/
+*.exe
+*.dll
+*.pdb
+
+# カメラ出力
+/camera_output/
+
+# OS
+.DS_Store
+Thumbs.db

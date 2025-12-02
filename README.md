@@ -23,34 +23,48 @@ Surface Go 4向けに最適化されたカメラアプリケーション。OpenC
 
 ## セットアップ
 
-### 1. OpenCVのインストール
+### 1. OpenCVとLLVMのインストール
 
 #### vcpkg使用(推奨)
 
 ```powershell
 # vcpkgのインストール (未インストールの場合)
-git clone https://github.com/Microsoft/vcpkg.git
-cd vcpkg
+git clone https://github.com/Microsoft/vcpkg.git C:\vcpkg
+cd C:\vcpkg
 .\bootstrap-vcpkg.bat
+
+# LLVM/Clangのインストール (opencv-rustのビルドに必要)
+.\vcpkg install llvm:x64-windows
 
 # OpenCVのインストール
 .\vcpkg install opencv4[contrib,nonfree]:x64-windows
 
-# 環境変数の設定
+# 環境変数の設定 (現在のセッションのみ)
 $env:OPENCV_LINK_LIBS="opencv_world4"
 $env:OPENCV_LINK_PATHS="C:\vcpkg\installed\x64-windows\lib"
 $env:OPENCV_INCLUDE_PATHS="C:\vcpkg\installed\x64-windows\include"
+$env:LIBCLANG_PATH="C:\vcpkg\installed\x64-windows\bin"
+
+# 環境変数を永続的に設定 (推奨)
+[System.Environment]::SetEnvironmentVariable("OPENCV_LINK_LIBS", "opencv_world4", "User")
+[System.Environment]::SetEnvironmentVariable("OPENCV_LINK_PATHS", "C:\vcpkg\installed\x64-windows\lib", "User")
+[System.Environment]::SetEnvironmentVariable("OPENCV_INCLUDE_PATHS", "C:\vcpkg\installed\x64-windows\include", "User")
+[System.Environment]::SetEnvironmentVariable("LIBCLANG_PATH", "C:\vcpkg\installed\x64-windows\bin", "User")
+
+# 設定後はPowerShellを再起動してください
 ```
 
 #### 手動インストール
 
-1. [OpenCV公式サイト](https://opencv.org/releases/)からWindows版をダウンロード
-2. 任意の場所に解凍
-3. 環境変数を設定:
+1. [LLVM公式サイト](https://releases.llvm.org/)からLLVMをダウンロード・インストール
+2. [OpenCV公式サイト](https://opencv.org/releases/)からWindows版をダウンロード
+3. 任意の場所に解凍
+4. 環境変数を設定:
    ```powershell
    $env:OPENCV_LINK_LIBS="opencv_world4"
    $env:OPENCV_LINK_PATHS="C:\opencv\build\x64\vc16\lib"
    $env:OPENCV_INCLUDE_PATHS="C:\opencv\build\include"
+   $env:LIBCLANG_PATH="C:\Program Files\LLVM\bin"
    ```
 
 ### 2. プロジェクトのビルド

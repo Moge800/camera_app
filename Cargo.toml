@@ -1,0 +1,10 @@
+[package]
+name = "camera_app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.29"
+egui = "0.29"
+opencv = { version = "0.92", features = ["videoio", "imgcodecs", "imgproc"] }
+chrono = "0.4"

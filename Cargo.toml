@@ -13,8 +13,15 @@ categories = ["multimedia::video", "gui"]
 [dependencies]
 eframe = "0.29"
 egui = "0.29"
-opencv = { version = "0.92", features = ["videoio", "imgcodecs", "imgproc"] }
+opencv = { version = "0.92", default-features = false, features = ["videoio", "imgcodecs", "imgproc"] }
 chrono = "0.4"
+
+[package.metadata.vcpkg]
+git = "https://github.com/microsoft/vcpkg"
+rev = "master"
+
+[package.metadata.vcpkg.target]
+x86_64-pc-windows-msvc = { install = ["llvm"] }
 
 [profile.release]
 opt-level = 3

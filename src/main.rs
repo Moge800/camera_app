@@ -1,10 +1,11 @@
 // 標準ライブラリのインポート
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 // サードパーティクレートのインポート
+use chrono::Local;
 use eframe::egui;
 use opencv::{
     core::{Mat, Size, Vector},
@@ -12,20 +13,19 @@ use opencv::{
     prelude::*,
     videoio::{self, VideoCapture, VideoWriter},
 };
-use chrono::Local;
 
 /// キャプチャモード: 写真撮影か動画録画かを区別
 #[derive(PartialEq, Clone, Copy)]
 enum CaptureMode {
-    Photo,  // 写真撮影モード
-    Video,  // 動画録画モード
+    Photo, // 写真撮影モード
+    Video, // 動画録画モード
 }
 
 /// カメラポジション: フロントカメラかリアカメラかを区別
 #[derive(PartialEq, Clone, Copy)]
 enum CameraPosition {
-    Front,  // フロントカメラ
-    Rear,   // リアカメラ
+    Front, // フロントカメラ
+    Rear,  // リアカメラ
 }
 
 /// カメラアプリケーションのメイン構造体
@@ -75,7 +75,7 @@ impl Default for CameraApp {
             camera_position: CameraPosition::Rear,
             is_recording: Arc::new(AtomicBool::new(false)),
             camera_index: 0,  // 0: リアカメラ (デフォルト)
-            frame_width: 640,  // 640x480は互換性が高い
+            frame_width: 640, // 640x480は互換性が高い
             frame_height: 480,
             output_dir,
         }
@@ -86,7 +86,33 @@ impl CameraApp {
     /// eframe起動時に呼ばれる初期化関数
     ///
     /// デフォルト設定でアプリケーションを構築し、カメラを初期化する。
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    /// 日本語フォント(Meiryo UI)を設定して文字化けを防ぐ。
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // 日本語フォントの設定
+        let mut fonts = egui::FontDefinitions::default();
+
+        // Windowsの標準日本語フォント "Meiryo UI" を使用
+        // システムフォントパスからフォントを読み込む
+        if let Ok(font_data) = std::fs::read("C:\\Windows\\Fonts\\meiryo.ttc") {
+            fonts
+                .font_data
+                .insert("meiryo".to_owned(), egui::FontData::from_owned(font_data));
+
+            // ProportionalとMonospaceの両方に設定
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "meiryo".to_owned());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .insert(0, "meiryo".to_owned());
+        }
+
+        cc.egui_ctx.set_fonts(fonts);
+
         let mut app = Self::default();
         app.init_camera();
         app
@@ -96,31 +122,48 @@ impl CameraApp {
     ///
     /// 指定されたカメラインデックスでVideoCaptureを開き、解像度を設定する。
     /// 設定した解像度が実際に適用されたかを確認し、実際の値を保存する。
+    /// Windows環境では複数のバックエンドを試行(MSMF → DirectShow → Any)
     fn init_camera(&mut self) {
-        match VideoCapture::new(self.camera_index, videoio::CAP_ANY) {
-            Ok(mut cam) => {
-                if cam.is_opened().unwrap_or(false) {
-                    // カメラの解像度を設定 (リクエスト)
-                    let _ = cam.set(videoio::CAP_PROP_FRAME_WIDTH, self.frame_width as f64);
-                    let _ = cam.set(videoio::CAP_PROP_FRAME_HEIGHT, self.frame_height as f64);
+        // 複数のバックエンドを順番に試す
+        let backends = [
+            videoio::CAP_MSMF,  // Windows Media Foundation (Windows 10/11推奨)
+            videoio::CAP_DSHOW, // DirectShow (古いデバイス対応)
+            videoio::CAP_ANY,   // 自動選択
+        ];
 
-                    // 実際に設定された解像度を取得 (デバイスによっては異なる場合がある)
-                    if let Ok(width) = cam.get(videoio::CAP_PROP_FRAME_WIDTH) {
-                        self.frame_width = width as i32;
-                    }
-                    if let Ok(height) = cam.get(videoio::CAP_PROP_FRAME_HEIGHT) {
-                        self.frame_height = height as i32;
-                    }
+        let mut cam_opened = false;
 
-                    *self.camera.lock().unwrap() = Some(cam);
-                    println!("カメラを初期化しました ({}x{})", self.frame_width, self.frame_height);
-                } else {
-                    eprintln!("カメラを開けませんでした");
+        for backend in backends.iter() {
+            match VideoCapture::new(self.camera_index, *backend) {
+                Ok(mut cam) => {
+                    if cam.is_opened().unwrap_or(false) {
+                        // カメラの解像度を設定 (リクエスト)
+                        let _ = cam.set(videoio::CAP_PROP_FRAME_WIDTH, self.frame_width as f64);
+                        let _ = cam.set(videoio::CAP_PROP_FRAME_HEIGHT, self.frame_height as f64);
+
+                        // 実際に設定された解像度を取得 (デバイスによっては異なる場合がある)
+                        if let Ok(width) = cam.get(videoio::CAP_PROP_FRAME_WIDTH) {
+                            self.frame_width = width as i32;
+                        }
+                        if let Ok(height) = cam.get(videoio::CAP_PROP_FRAME_HEIGHT) {
+                            self.frame_height = height as i32;
+                        }
+
+                        *self.camera.lock().unwrap() = Some(cam);
+                        println!(
+                            "カメラを初期化しました ({}x{}) - バックエンド: {}",
+                            self.frame_width, self.frame_height, backend
+                        );
+                        cam_opened = true;
+                        break;
+                    }
                 }
+                Err(_) => continue,
             }
-            Err(e) => {
-                eprintln!("カメラの初期化に失敗しました: {}", e);
-            }
+        }
+
+        if !cam_opened {
+            eprintln!("カメラを開けませんでした。すべてのバックエンドで失敗しました。");
         }
     }
 
@@ -163,7 +206,11 @@ impl CameraApp {
                     let filename = self.output_dir.join(format!("photo_{}.jpg", timestamp));
 
                     // JPEG形式で保存 (OpenCVのimwrite関数)
-                    match imgcodecs::imwrite(filename.to_str().unwrap_or("photo.jpg"), &frame, &Vector::new()) {
+                    match imgcodecs::imwrite(
+                        filename.to_str().unwrap_or("photo.jpg"),
+                        &frame,
+                        &Vector::new(),
+                    ) {
                         Ok(_) => println!("写真を保存しました: {:?}", filename),
                         Err(e) => eprintln!("写真の保存に失敗しました: {}", e),
                     }
@@ -189,9 +236,8 @@ impl CameraApp {
                 // fourcc: Four Character Code (動画コーデック識別子)
                 // mp4v: MPEG-4 Part 2 (互換性が高い)
                 // MJPG: Motion JPEG (フォールバック用)
-                let fourcc = VideoWriter::fourcc('m', 'p', '4', 'v').unwrap_or(
-                    VideoWriter::fourcc('M', 'J', 'P', 'G').unwrap_or(0)
-                );
+                let fourcc = VideoWriter::fourcc('m', 'p', '4', 'v')
+                    .unwrap_or(VideoWriter::fourcc('M', 'J', 'P', 'G').unwrap_or(0));
 
                 // カメラのFPSを取得 (不正な値の場合は30fpsをデフォルト)
                 let fps = cam.get(videoio::CAP_PROP_FPS).unwrap_or(30.0);
@@ -199,7 +245,13 @@ impl CameraApp {
                 let frame_size = Size::new(self.frame_width, self.frame_height);
 
                 // VideoWriterを作成
-                match VideoWriter::new(filename.to_str().unwrap_or("video.mp4"), fourcc, fps, frame_size, true) {
+                match VideoWriter::new(
+                    filename.to_str().unwrap_or("video.mp4"),
+                    fourcc,
+                    fps,
+                    frame_size,
+                    true,
+                ) {
                     Ok(writer) => {
                         // VideoWriterが正常に開けたか確認
                         if writer.is_opened().unwrap_or(false) {
@@ -266,7 +318,14 @@ impl CameraApp {
 
                     // フレームをBGR (OpenCV形式) からRGB (eGui形式) に変換
                     let mut rgb_frame = Mat::default();
-                    if opencv::imgproc::cvt_color(&frame, &mut rgb_frame, opencv::imgproc::COLOR_BGR2RGB, 0).is_ok() {
+                    if opencv::imgproc::cvt_color(
+                        &frame,
+                        &mut rgb_frame,
+                        opencv::imgproc::COLOR_BGR2RGB,
+                        0,
+                    )
+                    .is_ok()
+                    {
                         // フレームのサイズを取得
                         if let Ok(size) = rgb_frame.size() {
                             let width = size.width as usize;
@@ -326,24 +385,17 @@ impl eframe::App for CameraApp {
             if let Some(frame) = self.current_frame.lock().unwrap().as_ref() {
                 // フレームをテクスチャとしてGPUにアップロード
                 // 同じ名前 ("camera_frame") で上書きすることで自動的に更新される
-                let texture = ctx.load_texture(
-                    "camera_frame",
-                    frame.clone(),
-                    Default::default()
-                );
+                let texture = ctx.load_texture("camera_frame", frame.clone(), Default::default());
 
                 // 利用可能な画面サイズを取得
                 let available_size = ui.available_size();
                 // 画像表示サイズを計算 (最大800px幅、下部コントロール用に150px確保)
-                let image_size = [
-                    available_size.x.min(800.0),
-                    available_size.y - 150.0,
-                ];
+                let image_size = [available_size.x.min(800.0), available_size.y - 150.0];
 
                 // 画像を表示 (指定サイズにフィット)
                 ui.add(
                     egui::Image::new(&texture)
-                        .fit_to_exact_size(egui::vec2(image_size[0], image_size[1]))
+                        .fit_to_exact_size(egui::vec2(image_size[0], image_size[1])),
                 );
             } else {
                 // カメラ初期化中はメッセージを表示
@@ -357,10 +409,10 @@ impl eframe::App for CameraApp {
                 // キャプチャモード切り替えトグル (写真 or 動画)
                 ui.label("モード:");
                 // 写真モードボタン (選択中の場合ハイライト表示)
-                if ui.selectable_label(
-                    self.capture_mode == CaptureMode::Photo,
-                    "📷 写真"
-                ).clicked() {
+                if ui
+                    .selectable_label(self.capture_mode == CaptureMode::Photo, "📷 写真")
+                    .clicked()
+                {
                     // 録画中の場合は停止してから写真モードに切り替え
                     if self.is_recording.load(Ordering::Relaxed) {
                         self.stop_recording();
@@ -369,10 +421,10 @@ impl eframe::App for CameraApp {
                 }
 
                 // 動画モードボタン (選択中の場合ハイライト表示)
-                if ui.selectable_label(
-                    self.capture_mode == CaptureMode::Video,
-                    "🎥 動画"
-                ).clicked() {
+                if ui
+                    .selectable_label(self.capture_mode == CaptureMode::Video, "🎥 動画")
+                    .clicked()
+                {
                     self.capture_mode = CaptureMode::Video;
                 }
 
@@ -381,10 +433,10 @@ impl eframe::App for CameraApp {
                 // カメラ位置切り替えトグル (リア or フロント)
                 ui.label("カメラ:");
                 // リアカメラボタン (選択中の場合ハイライト表示)
-                if ui.selectable_label(
-                    self.camera_position == CameraPosition::Rear,
-                    "🔲 リア"
-                ).clicked() {
+                if ui
+                    .selectable_label(self.camera_position == CameraPosition::Rear, "🔲 リア")
+                    .clicked()
+                {
                     // 現在フロントカメラの場合のみ切り替え
                     if self.camera_position != CameraPosition::Rear {
                         self.camera_position = CameraPosition::Rear;
@@ -393,10 +445,10 @@ impl eframe::App for CameraApp {
                 }
 
                 // フロントカメラボタン (選択中の場合ハイライト表示)
-                if ui.selectable_label(
-                    self.camera_position == CameraPosition::Front,
-                    "🤳 フロント"
-                ).clicked() {
+                if ui
+                    .selectable_label(self.camera_position == CameraPosition::Front, "🤳 フロント")
+                    .clicked()
+                {
                     // 現在リアカメラの場合のみ切り替え
                     if self.camera_position != CameraPosition::Front {
                         self.camera_position = CameraPosition::Front;
@@ -465,8 +517,8 @@ fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         // ビューポート (ウィンドウ) の設定
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([800.0, 600.0])  // 初期ウィンドウサイズ
-            .with_title("Surface Go 4 カメラアプリ"),  // ウィンドウタイトル
+            .with_inner_size([800.0, 600.0]) // 初期ウィンドウサイズ
+            .with_title("Surface Go 4 カメラアプリ"), // ウィンドウタイトル
         ..Default::default()
     };
 
